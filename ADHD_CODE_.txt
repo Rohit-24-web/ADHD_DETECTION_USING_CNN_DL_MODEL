@@ -1,0 +1,137 @@
+# ADHD EEG Classification - Complete Code with Comments
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Install required packages
+!pip install scipy librosa tensorflow h5py
+
+# Import libraries
+import os
+import numpy as np
+import scipy.io
+import librosa
+import librosa.display
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+import matplotlib.pyplot as plt
+
+# Define dataset paths
+data_path = '/content/drive/MyDrive/data'
+adhd_path = os.path.join(data_path, 'ADHD')
+control_path = os.path.join(data_path, 'control')
+save_model_path = '/content/drive/MyDrive/saved_models'
+os.makedirs(save_model_path, exist_ok=True)
+
+# Function to inspect .mat file structure
+import scipy.io
+
+def inspect_mat_file(file_path):
+    try:
+        mat_data = scipy.io.loadmat(file_path)
+        print(f"File: {file_path}")
+        print("Keys:", mat_data.keys())
+    except Exception as e:
+        print(f"Error loading {file_path}: {e}")
+
+def inspect_all_files(folder_path):
+    for filename in os.listdir(folder_path):
+        if filename.endswith(".mat"):
+            inspect_mat_file(os.path.join(folder_path, filename))
+
+inspect_all_files(adhd_path)
+inspect_all_files(control_path)
+
+# Function to load EEG data from folder
+def load_eeg_data(folder_path):
+    data_list = []
+    labels = []
+
+    for filename in os.listdir(folder_path):
+        if filename.endswith('.mat'):
+            file_path = os.path.join(folder_path, filename)
+            eeg_data = scipy.io.loadmat(file_path)
+
+            # Extract first valid key
+            key = next((k for k in eeg_data.keys() if not k.startswith('__')), None)
+            if key is None:
+                continue
+
+            signal = eeg_data[key]
+
+            # Ensure shape consistency
+            if isinstance(signal, np.ndarray):
+                if signal.ndim == 1:
+                    reshaped_signal = signal.reshape(-1, 1)
+                elif signal.ndim == 2:
+                    reshaped_signal = signal
+                else:
+                    continue
+            else:
+                continue
+
+            data_list.append(reshaped_signal)
+            labels.append(os.path.basename(folder_path))
+
+    return data_list, labels
+
+# Load ADHD and Control data
+adhd_data, adhd_labels = load_eeg_data(adhd_path)
+control_data, control_labels = load_eeg_data(control_path)
+
+# Find maximum sequence length for padding
+max_length = max(max(data.shape[0] for data in adhd_data),
+                 max(data.shape[0] for data in control_data))
+
+# Pad signals for equal size
+adhd_padded = np.array([
+    np.pad(data, ((0, max_length - data.shape[0]), (0, 0)), mode='constant')
+    for data in adhd_data
+])
+control_padded = np.array([
+    np.pad(data, ((0, max_length - data.shape[0]), (0, 0)), mode='constant')
+    for data in control_data
+])
+
+# Combine datasets
+X = np.concatenate([adhd_padded, control_padded], axis=0)
+y = np.array(adhd_labels + control_labels)
+
+# Label encode ADHD vs Control
+encoder = LabelEncoder()
+y_encoded = encoder.fit_transform(y)
+y_categorical = to_categorical(y_encoded)
+
+# Expand dims for CNN input format
+X = np.expand_dims(X, axis=-1)
+
+# Train-test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y_categorical, test_size=0.2, random_state=42
+)
+
+# Build CNN Model
+model = Sequential([
+    Conv2D(32, (3,3), activation='relu', input_shape=(X.shape[1], X.shape[2], 1)),
+    MaxPooling2D((2,2)),
+    Conv2D(64, (3,3), activation='relu'),
+    MaxPooling2D((2,2)),
+    Flatten(),
+    Dense(128, activation='relu'),
+    Dropout(0.5),
+    Dense(2, activation='softmax')
+])
+
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Train model
+history = model.fit(X_train, y_train, epochs=20, batch_size=16, validation_split=0.2)
+
+# Evaluate model
+test_loss, test_acc = model.evaluate(X_test, y_test)
+
+# Save trained model
+model.save(os.path.join(save_model_path, 'ADHD_EEG_CNN_Model.h5'))
